@@ -1,0 +1,136 @@
+from datetime import UTC, datetime
+
+import pytest
+from fastapi.testclient import TestClient
+from pwdlib import PasswordHash
+from sqlalchemy import create_engine, event
+from sqlalchemy.orm import sessionmaker
+from sqlalchemy.pool import StaticPool
+
+from app.api.auth import get_session
+from app.infrastructure.database import Base, UserRecord
+from app.domain.exceptions import RuleViolation
+from app.infrastructure.relational_inventory_repository import SqlAlchemyInventoryRepository
+from app.main import app
+
+
+@pytest.fixture
+def session_factory():
+    engine = create_engine("sqlite://", connect_args={"check_same_thread": False}, poolclass=StaticPool)
+    @event.listens_for(engine, "connect")
+    def enable_foreign_keys(connection, record):
+        del record
+        cursor = connection.cursor()
+        cursor.execute("PRAGMA foreign_keys=ON")
+        cursor.close()
+
+    Base.metadata.create_all(engine)
+    factory = sessionmaker(bind=engine, expire_on_commit=False)
+    yield factory
+    Base.metadata.drop_all(engine)
+    engine.dispose()
+
+
+def seed_catalog(repository):
+    repository.save("branches", {"id": "b1", "name": "Main", "code": "M1", "city": "City", "phone": "123"})
+    repository.save("brands", {"id": "brand1", "name": "Brand", "origin": "Local"})
+    repository.save("categories", {"id": "category1", "name": "Parts", "description": "Parts"})
+    repository.save("subcategories", {"id": "subcategory1", "name": "General", "category_id": "category1"})
+    repository.save("customers", {"id": "c1", "name": "Customer", "phone": "", "email": "", "city": "", "address": ""})
+    repository.save("vendors", {"id": "v1", "name": "Vendor", "phone": "", "email": "", "city": ""})
+    repository.save("products", {
+        "id": "p1", "sku": "PART-1", "name": "Part", "brand_id": "brand1",
+        "category_id": "category1", "subcategory_id": "subcategory1", "gst": 18,
+        "cost_price": 4, "selling_price": 8,
+    })
+
+
+def test_login_jwt_and_protected_inventory(session_factory):
+    with session_factory() as session:
+        session.add(UserRecord(id="u1", name="Test Admin", username="admin", password_hash=PasswordHash.recommended().hash("secret"), role="Admin", active=True))
+        session.commit()
+
+    def override_session():
+        with session_factory() as session:
+            yield session
+            session.commit()
+
+    app.dependency_overrides[get_session] = override_session
+    try:
+        with TestClient(app) as client:
+            assert client.get("/api/inventory/branches").status_code == 401
+            response = client.post("/api/auth/login", json={"username": "admin", "password": "secret"})
+            assert response.status_code == 200
+            token = response.json()["access_token"]
+            headers = {"Authorization": f"Bearer {token}"}
+            created = client.post("/api/inventory/branches", headers=headers, json={"name": "Main", "code": "M1", "city": "City", "phone": "123"})
+            assert created.status_code == 200
+            assert created.json()["name"] == "Main"
+            assert "password" not in created.json()
+    finally:
+        app.dependency_overrides.clear()
+
+
+def test_sale_stock_is_atomic_on_insufficient_quantity(session_factory):
+    with session_factory() as session:
+        repository = SqlAlchemyInventoryRepository(session)
+        seed_catalog(repository)
+        repository.save("stock", {"id": "stock-1", "product_id": "p1", "branch_id": "b1", "quantity": 3}, "b1:p1")
+        session.commit()
+        sale = {"id": "sale-1", "number": "INV-1", "customer_id": "c1", "branch_id": "b1", "date": datetime.now(UTC).isoformat(), "items": [{"product_id": "p1", "quantity": 2, "unit_price": 8, "unit_cost": 4}]}
+        repository.create_sale(sale)
+        session.commit()
+        assert repository.stock_item("p1", "b1")["quantity"] == 1
+        sale["id"] = "sale-2"
+        sale["number"] = "INV-2"
+        sale["items"][0]["quantity"] = 2
+        with pytest.raises(RuleViolation):
+            repository.create_sale(sale)
+        session.rollback()
+        assert repository.stock_item("p1", "b1")["quantity"] == 1
+
+
+def test_receipt_and_return_stock_movements_and_duplicate_line_limits(session_factory):
+    with session_factory() as session:
+        repository = SqlAlchemyInventoryRepository(session)
+        seed_catalog(repository)
+        repository.save("purchase_orders", {
+            "id": "po1", "number": "PO-1", "vendor_id": "v1", "branch_id": "b1",
+            "date": datetime.now(UTC).isoformat(), "expected_date": datetime.now(UTC).isoformat(),
+            "status": "Pending", "payment_status": "Unpaid",
+            "items": [{"product_id": "p1", "quantity": 5, "received": 0, "unit_cost": 4}],
+        })
+        session.commit()
+
+        invalid_receipt = {
+            "id": "grn-bad", "number": "GRN-BAD", "purchase_order_id": "po1",
+            "date": datetime.now(UTC).isoformat(), "note": "", "items": [
+                {"product_id": "p1", "quantity": 3}, {"product_id": "p1", "quantity": 3},
+            ],
+        }
+        with pytest.raises(RuleViolation):
+            repository.create_receipt(invalid_receipt)
+        assert repository.stock_item("p1", "b1") is None
+
+        receipt = {**invalid_receipt, "id": "grn1", "number": "GRN-1", "items": [{"product_id": "p1", "quantity": 5}]}
+        repository.create_receipt(receipt)
+        sale = {
+            "id": "sale1", "number": "INV-1", "customer_id": "c1", "branch_id": "b1",
+            "date": datetime.now(UTC).isoformat(),
+            "items": [{"product_id": "p1", "quantity": 3, "unit_price": 8, "unit_cost": 4}],
+        }
+        repository.create_sale(sale)
+        invalid_return = {
+            "id": "return-bad", "number": "SR-BAD", "sale_id": "sale1",
+            "date": datetime.now(UTC).isoformat(), "reason": "", "items": [
+                {"product_id": "p1", "quantity": 2}, {"product_id": "p1", "quantity": 2},
+            ],
+        }
+        with pytest.raises(RuleViolation):
+            repository.create_return(invalid_return)
+        assert repository.stock_item("p1", "b1")["quantity"] == 2
+
+        repository.create_return({**invalid_return, "id": "return1", "number": "SR-1", "items": [{"product_id": "p1", "quantity": 1}]})
+        transaction_types = {transaction["type"] for transaction in repository.list("transactions")}
+        assert transaction_types == {"Purchase", "Sale", "Return"}
+        assert repository.stock_item("p1", "b1")["quantity"] == 3
