@@ -105,7 +105,7 @@ class SqlAlchemyInventoryRepository:
         return self._serialize(resource, row)
 
     def _validate_user(self, data: dict, identifier: str) -> None:
-        if not data.get("branch_id"):
+        if not data.get("branch_id") or str(data["branch_id"]).strip().lower() in {"all", "null", "none"}:
             data["branch_id"] = None
         elif self.session.get(BranchRecord, data["branch_id"]) is None:
             raise RuleViolation("The selected branch does not exist.")

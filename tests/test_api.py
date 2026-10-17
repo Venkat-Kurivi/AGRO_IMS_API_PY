@@ -192,6 +192,9 @@ def test_create_user_handles_blank_branch_and_rejects_bad_input(session_factory)
             blank = create(username="admin2", role="Admin", branchId="")
             assert blank.status_code == 200
             assert blank.json()["branchId"] is None
+            all_branches = create(username="admin3", role="Admin", branchId="all")
+            assert all_branches.status_code == 200
+            assert all_branches.json()["branchId"] is None
             assert create().status_code == 409
             assert create(username="other", branchId="missing").status_code == 400
             assert create(username="other", role="superuser").status_code == 422
