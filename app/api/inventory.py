@@ -3,7 +3,9 @@ from datetime import UTC, datetime
 from typing import Annotated
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
+from fastapi.encoders import jsonable_encoder
 from fastapi.responses import Response
+from pydantic import ValidationError
 from sqlalchemy.orm import Session
 
 from app.api.auth import SessionDep, get_current_user
@@ -54,7 +56,10 @@ def _handlers(session: Session) -> InventoryHandlers:
 
 
 def _payload(model, body: dict) -> dict:
-    return model.model_validate(body).model_dump(mode="json", by_alias=False, exclude_none=True)
+    try:
+        return model.model_validate(body).model_dump(mode="json", by_alias=False, exclude_none=True)
+    except ValidationError as error:
+        raise HTTPException(status_code=422, detail=jsonable_encoder(error.errors(include_url=False, include_context=False))) from error
 
 
 def _make_list(resource: str):

@@ -74,6 +74,8 @@ class SqlAlchemyInventoryRepository:
         data = dict(payload)
         identifier = record_id or data.get("id") or uuid4().hex
         data["id"] = identifier
+        if resource == "users":
+            self._validate_user(data, identifier)
         if resource == "stock":
             row = self.session.scalar(select(StockItemRecord).where(
                 StockItemRecord.product_id == data["product_id"],
@@ -101,6 +103,17 @@ class SqlAlchemyInventoryRepository:
             row.items = [self._make_child(resource, item) for item in nested]
         self.session.flush()
         return self._serialize(resource, row)
+
+    def _validate_user(self, data: dict, identifier: str) -> None:
+        if not data.get("branch_id"):
+            data["branch_id"] = None
+        elif self.session.get(BranchRecord, data["branch_id"]) is None:
+            raise RuleViolation("The selected branch does not exist.")
+        username = data.get("username")
+        if username and self.session.scalar(select(UserRecord.id).where(
+            UserRecord.username == username, UserRecord.id != identifier,
+        )):
+            raise ConflictError("A user with this username already exists.")
 
     def delete(self, resource: str, record_id: str) -> bool:
         if resource == "stock":

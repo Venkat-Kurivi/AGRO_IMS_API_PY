@@ -167,6 +167,40 @@ def test_session_is_committed_before_response_is_sent(session_factory):
     assert events == ["commit", "response"]
 
 
+def test_create_user_handles_blank_branch_and_rejects_bad_input(session_factory):
+    with session_factory() as session:
+        session.add(UserRecord(id="u1", name="Test Admin", username="admin", password_hash=PasswordHash.recommended().hash("secret"), role="Admin", active=True))
+        SqlAlchemyInventoryRepository(session).save("branches", {"id": "br1", "name": "Main", "code": "M1", "city": "", "phone": ""})
+        session.commit()
+
+    def override_session():
+        with session_factory() as session:
+            yield session
+            session.commit()
+
+    app.dependency_overrides[get_session] = override_session
+    try:
+        with TestClient(app) as client:
+            token = client.post("/api/auth/login", json={"username": "admin", "password": "secret"}).json()["access_token"]
+            headers = {"Authorization": f"Bearer {token}"}
+
+            def create(**overrides):
+                body = {"name": "New", "username": "new1", "password": "pw", "role": "Manager", "branchId": "br1", "active": True}
+                return client.post("/api/inventory/users", headers=headers, json={**body, **overrides})
+
+            assert create().status_code == 200
+            blank = create(username="admin2", role="Admin", branchId="")
+            assert blank.status_code == 200
+            assert blank.json()["branchId"] is None
+            assert create().status_code == 409
+            assert create(username="other", branchId="missing").status_code == 400
+            assert create(username="other", role="superuser").status_code == 422
+
+            assert client.post("/api/auth/login", json={"username": "admin2", "password": "pw"}).status_code == 200
+    finally:
+        app.dependency_overrides.clear()
+
+
 def test_sale_stock_is_atomic_on_insufficient_quantity(session_factory):
     with session_factory() as session:
         repository = SqlAlchemyInventoryRepository(session)
