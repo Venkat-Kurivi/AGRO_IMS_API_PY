@@ -40,8 +40,13 @@ def get_session():
         session.close()
 
 
+# Function scope commits before the response is sent; the default request scope commits afterwards,
+# so clients could read stale data and commit failures would never reach them.
+SessionDep = Annotated[Session, Depends(get_session, scope="function")]
+
+
 @router.post("/login", response_model=TokenResponse)
-def login(request: LoginRequest, session: Annotated[Session, Depends(get_session)]) -> TokenResponse:
+def login(request: LoginRequest, session: SessionDep) -> TokenResponse:
     try:
         token, user = AuthenticateUser(SqlAlchemyUserRepository(session)).execute(
             request.username, request.password

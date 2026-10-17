@@ -6,7 +6,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query, status
 from fastapi.responses import Response
 from sqlalchemy.orm import Session
 
-from app.api.auth import get_current_user, get_session
+from app.api.auth import SessionDep, get_current_user
 from app.api.schemas import (
     RESOURCE_MODELS,
     PurchaseOrderData,
@@ -58,7 +58,7 @@ def _payload(model, body: dict) -> dict:
 
 
 def _make_list(resource: str):
-    def endpoint(session: Annotated[Session, Depends(get_session)], user: Annotated[AuthenticatedUser, Depends(get_current_user)]):
+    def endpoint(session: SessionDep, user: Annotated[AuthenticatedUser, Depends(get_current_user)]):
         if resource == "users" and user.role.value != "Admin":
             raise HTTPException(status_code=403, detail="Administrator role required")
         return _wire(_handlers(session).handle(ListRecordsQuery(resource)))
@@ -67,7 +67,7 @@ def _make_list(resource: str):
 
 
 def _make_create(resource: str, model):
-    def endpoint(body: dict, session: Annotated[Session, Depends(get_session)], user: Annotated[AuthenticatedUser, Depends(get_current_user)]):
+    def endpoint(body: dict, session: SessionDep, user: Annotated[AuthenticatedUser, Depends(get_current_user)]):
         payload = _payload(model, body)
         if resource == "users":
             raw_password = payload.pop("password", None)
@@ -84,7 +84,7 @@ def _make_create(resource: str, model):
 
 
 def _make_update(resource: str, model):
-    def endpoint(record_id: str, body: dict, session: Annotated[Session, Depends(get_session)], user: Annotated[AuthenticatedUser, Depends(get_current_user)]):
+    def endpoint(record_id: str, body: dict, session: SessionDep, user: Annotated[AuthenticatedUser, Depends(get_current_user)]):
         if _repo(session).get(resource, record_id) is None:
             raise HTTPException(status_code=404, detail="Record not found")
         payload = _payload(model, body)
@@ -103,7 +103,7 @@ def _make_update(resource: str, model):
 
 
 def _make_delete(resource: str):
-    def endpoint(record_id: str, session: Annotated[Session, Depends(get_session)], user: Annotated[AuthenticatedUser, Depends(get_current_user)]):
+    def endpoint(record_id: str, session: SessionDep, user: Annotated[AuthenticatedUser, Depends(get_current_user)]):
         if resource == "users" and user.role.value != "Admin":
             raise HTTPException(status_code=403, detail="Administrator role required")
         deleted = _handlers(session).handle(DeleteRecordCommand(resource, record_id))
@@ -122,12 +122,12 @@ for resource, model in RESOURCE_MODELS.items():
 
 
 @router.get("/dashboard")
-def dashboard(session: Annotated[Session, Depends(get_session)], branch_id: str | None = Query(default=None, alias="branchId")):
+def dashboard(session: SessionDep, branch_id: str | None = Query(default=None, alias="branchId")):
     return _wire(_handlers(session).handle(DashboardQuery(branch_id)))
 
 
 @router.get("/products")
-def products(session: Annotated[Session, Depends(get_session)], branch_id: str | None = Query(default=None, alias="branchId")):
+def products(session: SessionDep, branch_id: str | None = Query(default=None, alias="branchId")):
     repository = _repo(session)
     products_data = repository.list("products")
     stock = repository.list("stock")
@@ -142,12 +142,12 @@ def products(session: Annotated[Session, Depends(get_session)], branch_id: str |
 
 
 @router.get("/stock")
-def get_stock(session: Annotated[Session, Depends(get_session)]):
+def get_stock(session: SessionDep):
     return _wire(_repo(session).list("stock"))
 
 
 @router.get("/stock/{branch_id}/{product_id}")
-def get_stock_item(branch_id: str, product_id: str, session: Annotated[Session, Depends(get_session)]):
+def get_stock_item(branch_id: str, product_id: str, session: SessionDep):
     result = _repo(session).stock_item(product_id, branch_id)
     if result is None:
         raise HTTPException(status_code=404, detail="Stock item not found")
@@ -155,7 +155,7 @@ def get_stock_item(branch_id: str, product_id: str, session: Annotated[Session, 
 
 
 @router.post("/stock")
-def create_stock_item(body: StockItemCreateData, session: Annotated[Session, Depends(get_session)]):
+def create_stock_item(body: StockItemCreateData, session: SessionDep):
     repository = _repo(session)
     if repository.stock_item(body.product_id, body.branch_id):
         raise HTTPException(status_code=409, detail="This product already has a stock record for the selected branch.")
@@ -163,7 +163,7 @@ def create_stock_item(body: StockItemCreateData, session: Annotated[Session, Dep
 
 
 @router.put("/stock/{branch_id}/{product_id}")
-def update_stock_item(branch_id: str, product_id: str, body: StockItemUpdateData, session: Annotated[Session, Depends(get_session)]):
+def update_stock_item(branch_id: str, product_id: str, body: StockItemUpdateData, session: SessionDep):
     repository = _repo(session)
     if repository.stock_item(product_id, branch_id) is None:
         raise HTTPException(status_code=404, detail="Stock item not found")
@@ -171,7 +171,7 @@ def update_stock_item(branch_id: str, product_id: str, body: StockItemUpdateData
 
 
 @router.delete("/stock/{branch_id}/{product_id}", status_code=204)
-def delete_stock_item(branch_id: str, product_id: str, session: Annotated[Session, Depends(get_session)]):
+def delete_stock_item(branch_id: str, product_id: str, session: SessionDep):
     repository = _repo(session)
     stock = repository.stock_item(product_id, branch_id)
     if stock is None:
@@ -181,17 +181,17 @@ def delete_stock_item(branch_id: str, product_id: str, session: Annotated[Sessio
 
 
 @router.get("/transactions")
-def transactions(session: Annotated[Session, Depends(get_session)]):
+def transactions(session: SessionDep):
     return _wire(_repo(session).list("transactions"))
 
 
 @router.get("/purchase-orders")
-def purchase_orders(session: Annotated[Session, Depends(get_session)]):
+def purchase_orders(session: SessionDep):
     return _wire(_repo(session).list("purchase_orders"))
 
 
 @router.post("/purchase-orders")
-def create_purchase_order(body: PurchaseOrderData, session: Annotated[Session, Depends(get_session)]):
+def create_purchase_order(body: PurchaseOrderData, session: SessionDep):
     payload = _payload(PurchaseOrderData, body.model_dump())
     payload.update({"number": f"PO-{datetime.now(UTC):%Y%m%d%H%M%S%f}", "status": "Pending", "payment_status": "Unpaid"})
     payload["items"] = [{**item, "received": 0} for item in payload["items"]]
@@ -199,7 +199,7 @@ def create_purchase_order(body: PurchaseOrderData, session: Annotated[Session, D
 
 
 @router.patch("/purchase-orders/{record_id}/status")
-def update_purchase_order_status(record_id: str, body: dict, session: Annotated[Session, Depends(get_session)]):
+def update_purchase_order_status(record_id: str, body: dict, session: SessionDep):
     repository = _repo(session)
     order = repository.get("purchase_orders", record_id)
     if order is None:
@@ -215,30 +215,30 @@ def update_purchase_order_status(record_id: str, body: dict, session: Annotated[
 
 
 @router.delete("/purchase-orders/{record_id}", status_code=204)
-def delete_purchase_order(record_id: str, session: Annotated[Session, Depends(get_session)]):
+def delete_purchase_order(record_id: str, session: SessionDep):
     if not _repo(session).delete("purchase_orders", record_id):
         raise HTTPException(status_code=404, detail="Purchase order not found")
 
 
 @router.get("/purchase-receipts")
-def purchase_receipts(session: Annotated[Session, Depends(get_session)]):
+def purchase_receipts(session: SessionDep):
     return _wire(_repo(session).list("purchase_receipts"))
 
 
 @router.post("/purchase-receipts")
-def create_purchase_receipt(body: PurchaseReceiptData, session: Annotated[Session, Depends(get_session)]):
+def create_purchase_receipt(body: PurchaseReceiptData, session: SessionDep):
     payload = _payload(PurchaseReceiptData, body.model_dump())
     payload["number"] = f"GRN-{datetime.now(UTC):%Y%m%d%H%M%S%f}"
     return _wire(_handlers(session).handle(CreatePurchaseReceiptCommand(payload)))
 
 
 @router.get("/sales")
-def sales(session: Annotated[Session, Depends(get_session)]):
+def sales(session: SessionDep):
     return _wire(_repo(session).list("sales"))
 
 
 @router.post("/sales")
-def create_sale(body: SaleData, session: Annotated[Session, Depends(get_session)]):
+def create_sale(body: SaleData, session: SessionDep):
     repository = _repo(session)
     payload = _payload(SaleData, body.model_dump())
     products_by_id = {product["id"]: product for product in repository.list("products")}
@@ -254,7 +254,7 @@ def create_sale(body: SaleData, session: Annotated[Session, Depends(get_session)
 
 
 @router.put("/sales/{record_id}")
-def update_sale(record_id: str, body: SaleData, session: Annotated[Session, Depends(get_session)]):
+def update_sale(record_id: str, body: SaleData, session: SessionDep):
     repository = _repo(session)
     payload = _payload(SaleData, body.model_dump())
     products_by_id = {product["id"]: product for product in repository.list("products")}
@@ -271,24 +271,24 @@ def update_sale(record_id: str, body: SaleData, session: Annotated[Session, Depe
 
 
 @router.get("/sales/returns")
-def sales_returns(session: Annotated[Session, Depends(get_session)]):
+def sales_returns(session: SessionDep):
     return _wire(_repo(session).list("sales_returns"))
 
 
 @router.post("/sales/returns")
-def create_sales_return(body: SalesReturnData, session: Annotated[Session, Depends(get_session)]):
+def create_sales_return(body: SalesReturnData, session: SessionDep):
     payload = _payload(SalesReturnData, body.model_dump())
     payload["number"] = f"SR-{datetime.now(UTC):%Y%m%d%H%M%S}"
     return _wire(_handlers(session).handle(CreateSalesReturnCommand(payload)))
 
 
 @router.post("/stock/adjust")
-def adjust_stock(body: StockAdjustmentData, session: Annotated[Session, Depends(get_session)]):
+def adjust_stock(body: StockAdjustmentData, session: SessionDep):
     result = _handlers(session).handle(AdjustStockCommand(body.product_id, body.branch_id, body.quantity, body.note))
     return _wire({"product_id": body.product_id, "branch_id": body.branch_id, "quantity": body.quantity, "note": body.note, "updated_stock": result["quantity"]})
 
 
 @router.post("/stock/quantity")
-def set_stock_quantity(body: StockAdjustmentData, session: Annotated[Session, Depends(get_session)]):
+def set_stock_quantity(body: StockAdjustmentData, session: SessionDep):
     result = _handlers(session).handle(AdjustStockCommand(body.product_id, body.branch_id, body.quantity, body.note, True))
     return _wire({"product_id": body.product_id, "branch_id": body.branch_id, "quantity": body.quantity, "note": body.note, "updated_stock": result["quantity"]})

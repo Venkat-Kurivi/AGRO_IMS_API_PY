@@ -1,3 +1,4 @@
+import asyncio
 from datetime import UTC, datetime
 
 import pytest
@@ -69,6 +70,101 @@ def test_login_jwt_and_protected_inventory(session_factory):
             assert "password" not in created.json()
     finally:
         app.dependency_overrides.clear()
+
+
+def test_user_password_update_is_persisted_and_usable_for_login(session_factory):
+    with session_factory() as session:
+        session.add(UserRecord(
+            id="u1",
+            name="Test Admin",
+            username="admin",
+            password_hash=PasswordHash.recommended().hash("old-secret"),
+            role="Admin",
+            active=True,
+        ))
+        session.commit()
+
+    def override_session():
+        with session_factory() as session:
+            yield session
+            session.commit()
+
+    app.dependency_overrides[get_session] = override_session
+    try:
+        with TestClient(app) as client:
+            login = client.post("/api/auth/login", json={"username": "admin", "password": "old-secret"})
+            assert login.status_code == 200
+            headers = {"Authorization": f"Bearer {login.json()['access_token']}"}
+            updated = client.put(
+                "/api/inventory/users/u1",
+                headers=headers,
+                json={
+                    "name": "Test Admin",
+                    "username": "admin",
+                    "password": "new-secret",
+                    "role": "Admin",
+                    "active": True,
+                },
+            )
+            assert updated.status_code == 200
+
+            with session_factory() as session:
+                stored_hash = session.get(UserRecord, "u1").password_hash
+                assert stored_hash != "new-secret"
+                assert PasswordHash.recommended().verify("new-secret", stored_hash)
+
+            assert client.post(
+                "/api/auth/login",
+                json={"username": "admin", "password": "new-secret"},
+            ).status_code == 200
+            assert client.post(
+                "/api/auth/login",
+                json={"username": "admin", "password": "old-secret"},
+            ).status_code == 401
+    finally:
+        app.dependency_overrides.clear()
+
+
+def test_session_is_committed_before_response_is_sent(session_factory):
+    with session_factory() as session:
+        session.add(UserRecord(id="u1", name="Test Admin", username="admin", password_hash=PasswordHash.recommended().hash("secret"), role="Admin", active=True))
+        session.commit()
+    events = []
+
+    def override_session():
+        with session_factory() as session:
+            yield session
+            session.commit()
+            events.append("commit")
+
+    async def call_login():
+        body = b'{"username": "admin", "password": "secret"}'
+        sent = False
+
+        async def receive():
+            nonlocal sent
+            if sent:
+                return {"type": "http.disconnect"}
+            sent = True
+            return {"type": "http.request", "body": body, "more_body": False}
+
+        async def send(message):
+            if message["type"] == "http.response.body" and not message.get("more_body"):
+                events.append("response")
+
+        await app({
+            "type": "http", "asgi": {"version": "3.0"}, "http_version": "1.1", "method": "POST",
+            "path": "/api/auth/login", "raw_path": b"/api/auth/login", "query_string": b"",
+            "headers": [(b"content-type", b"application/json"), (b"content-length", str(len(body)).encode())],
+            "scheme": "http", "server": ("test", 80), "client": ("test", 1),
+        }, receive, send)
+
+    app.dependency_overrides[get_session] = override_session
+    try:
+        asyncio.run(call_login())
+    finally:
+        app.dependency_overrides.clear()
+    assert events == ["commit", "response"]
 
 
 def test_sale_stock_is_atomic_on_insufficient_quantity(session_factory):
