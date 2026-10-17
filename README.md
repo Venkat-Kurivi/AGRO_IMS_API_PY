@@ -4,13 +4,13 @@ Python migration of the AGRO Inventory ASP.NET API, using domain, application, i
 
 ## Run
 
-Create a virtual environment, install `requirements.txt`, copy `.env.example` to `.env`, and set a unique `JWT_SECRET` and `INITIAL_ADMIN_PASSWORD`. Then start the API:
+Create a virtual environment, install `requirements.txt`, copy `.env.example` to `.env`, and set a unique `JWT_SECRET`. Then start the API:
 
 ```powershelluvicorn app.main:app --reload
 uvicorn app.main:app --reload
 ```
 
-Interactive API documentation is available at `/docs`; health check is `/health`. The initial development admin username and password default to `admin` / `admin123`; change them before exposing the service. Existing plaintext .NET passwords are not reused as hashes; the Python app creates a fresh admin credential on an empty database.
+Interactive API documentation is available at `/docs`; health check is `/health`. The API does not create default users or reference data at startup: provision the required records in the database before using it. Existing plaintext .NET passwords are not reused as hashes.
 
 The SQLAlchemy models use the normalized relational tables in `database/AGRO_IMS_POSTGRESQL.sql`. Create the database and apply the script, then set `DATABASE_URL` in `.env`:
 

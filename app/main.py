@@ -6,37 +6,14 @@ from fastapi.responses import JSONResponse
 
 from app.api.auth import router as auth_router
 from app.api.inventory import router as inventory_router
-from app.application.authentication import password_hash
-from app.core.config import settings
 from app.domain.exceptions import ConflictError, NotFoundError, RuleViolation
-from app.infrastructure.database import SessionLocal, UserRecord, initialize_database
-from app.infrastructure.relational_inventory_repository import SqlAlchemyInventoryRepository
+from app.infrastructure.database import initialize_database
 
 
 @asynccontextmanager
 async def lifespan(_application: FastAPI):
     del _application
     initialize_database()
-    with SessionLocal() as session:
-        if session.query(UserRecord).count() == 0:
-            session.add(UserRecord(
-                id="us1",
-                name="AGRO Administrator",
-                username=settings.initial_admin_username,
-                password_hash=password_hash.hash(settings.initial_admin_password),
-                role="Admin",
-                active=True,
-            ))
-            session.commit()
-        repository = SqlAlchemyInventoryRepository(session)
-        if not repository.list("branches"):
-            for branch in [
-                {"id": "br1", "name": "Karimnagar Main", "code": "KRM", "city": "Karimnagar", "phone": "0878 224 1100"},
-                {"id": "br2", "name": "Warangal Depot", "code": "WGL", "city": "Warangal", "phone": "0870 245 7781"},
-                {"id": "br3", "name": "Nizamabad Yard", "code": "NZB", "city": "Nizamabad", "phone": "08462 233 909"},
-            ]:
-                repository.save("branches", branch)
-            session.commit()
     yield
 
 
